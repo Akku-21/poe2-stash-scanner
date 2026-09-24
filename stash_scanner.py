@@ -43,7 +43,7 @@ SETTINGS_FILE = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "scanner_settings.json"
 )
 
-VERSION = "0.4.0"
+VERSION = "0.5.0"
 
 NORMAL_GRID = (12, 12)
 QUAD_GRID = (24, 24)
@@ -461,8 +461,10 @@ def scan_stash(top_left, bottom_right, grid_size, window_id, hover_delay=HOVER_D
 
     items_found = []
     occupied = set()
+    seen_hashes = set()
     empty_cells = 0
     skipped_cells = 0
+    duplicate_cells = 0
     scanned_cells = 0
 
     clear_clipboard()
@@ -494,6 +496,7 @@ def scan_stash(top_left, bottom_right, grid_size, window_id, hover_delay=HOVER_D
 
         scanned_cells += 1
 
+        clear_clipboard()
         t0 = time.perf_counter()
         move_and_copy(cx, cy, window_id, hover_delay)
         t1 = time.perf_counter()
@@ -522,6 +525,12 @@ def scan_stash(top_left, bottom_right, grid_size, window_id, hover_delay=HOVER_D
             for c in range(col, col + w):
                 occupied.add((r, c))
 
+        item_hash = hashlib.md5(text.encode()).hexdigest()[:16]
+        if item_hash in seen_hashes:
+            duplicate_cells += 1
+            continue
+        seen_hashes.add(item_hash)
+
         summary = extract_item_summary(text)
         items_found.append(
             {
@@ -546,6 +555,7 @@ def scan_stash(top_left, bottom_right, grid_size, window_id, hover_delay=HOVER_D
     print(f"  Items found:    {len(items_found)}")
     print(f"  Cells scanned:  {scanned_cells}")
     print(f"  Cells skipped:  {skipped_cells} (occupied by known items)")
+    print(f"  Duplicates:     {duplicate_cells} (identical items, not reported)")
     print(f"  Empty cells:    {empty_cells}")
     print(f"  Total cells:    {total_cells}")
     if scanned_cells > 0:
