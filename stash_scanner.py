@@ -44,7 +44,7 @@ SETTINGS_FILE = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "scanner_settings.json"
 )
 
-VERSION = "0.6.0"
+VERSION = "0.6.1"
 
 NORMAL_GRID = (12, 12)
 QUAD_GRID = (24, 24)
@@ -145,6 +145,48 @@ def price_check_item(
         return {"ok": False, "error": "Brain disconnected without response"}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+
+def brain_send(cmd_obj, sock_path=DEFAULT_BRAIN_SOCKET, timeout=15):
+    if not os.path.exists(sock_path):
+        return {"ok": False, "error": f"Brain socket not found: {sock_path}"}
+    try:
+        s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        s.connect(sock_path)
+        s.sendall((json.dumps(cmd_obj) + "\n").encode())
+        buf = ""
+        while True:
+            chunk = s.recv(8192).decode("utf-8", errors="replace")
+            if not chunk:
+                break
+            buf += chunk
+            lines = buf.split("\n")
+            buf = lines[-1]
+            for line in lines[:-1]:
+                line = line.strip()
+                if not line:
+                    continue
+                resp = json.loads(line)
+                if "ok" in resp:
+                    s.close()
+                    return resp
+        s.close()
+        return {"ok": False, "error": "Brain disconnected without response"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def brain_login(sessid, sock_path=DEFAULT_BRAIN_SOCKET):
+    result = brain_send(
+        {"id": "auth", "cmd": "login", "sessionId": sessid}, sock_path=sock_path
+    )
+    if result.get("ok"):
+        name = result.get("result", {}).get("name", "")
+        print(f"  [brain] logged in as: {name}")
+    else:
+        print(f"  [brain] login failed: {result.get('error', '?')}")
+    return result.get("ok", False)
 
 
 def format_price_result(result):
@@ -733,6 +775,12 @@ def main():
         action="store_true",
         help="Price check the first item found, then stop scanning",
     )
+    parser.add_argument(
+        "--set-sessid",
+        type=str,
+        metavar="POESESSID",
+        help="Save POESESSID to settings for authenticated trade API calls",
+    )
     args = parser.parse_args()
 
     check_dependencies()
@@ -741,14 +789,19 @@ def main():
         save_stash_template()
         sys.exit(0)
 
+    settings = load_settings()
+
+    if args.set_sessid:
+        settings["poesessid"] = args.set_sessid
+        save_settings(settings)
+        print("  [settings] POESESSID saved.")
+        sys.exit(0)
+
     grid_size = QUAD_GRID if args.quad else NORMAL_GRID
     grid_label = "Quad/XXL (24x24)" if args.quad else "Normal (12x12)"
 
     print(f"\n  PoE2 Stash Scanner v{VERSION}")
     print(f"  Grid: {grid_label}")
-
-    # Load settings or calibrate
-    settings = load_settings()
     grid_key = "quad" if args.quad else "normal"
 
     if args.calibrate or grid_key not in settings:
@@ -766,6 +819,15 @@ def main():
     if not wid:
         print("\n  [ERROR] PoE2 window not found! Is the game running?")
         sys.exit(1)
+
+    if args.price_first:
+        sessid = settings.get("poesessid", "")
+        if sessid:
+            print(f"  Logging into brain...")
+            brain_login(sessid, sock_path=args.brain)
+        else:
+            print("  [warn] No POESESSID set — trade API calls will be anonymous.")
+            print("  Run: venv/bin/python stash_scanner.py --set-sessid YOUR_POESESSID")
 
     print(f"\n  Starting scan in {args.countdown} seconds...")
     for i in range(args.countdown, 0, -1):
