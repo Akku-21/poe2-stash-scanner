@@ -39,7 +39,7 @@ SETTINGS_FILE = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "scanner_settings.json"
 )
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 
 NORMAL_GRID = (12, 12)
 QUAD_GRID = (24, 24)
@@ -49,6 +49,48 @@ HOVER_DELAY = 0.03
 COPY_DELAY = 0.01
 CLIPBOARD_SENTINEL = "__STASH_SCANNER_EMPTY__"
 POE_WINDOW_TITLE = "Path of Exile 2"
+
+ITEM_SIZE = {
+    "Rings": (1, 1),
+    "Amulets": (1, 1),
+    "Jewels": (1, 1),
+    "Charms": (1, 1),
+    "Currency": (1, 1),
+    "Stackable Currency": (1, 1),
+    "Skill Gems": (1, 1),
+    "Support Gems": (1, 1),
+    "Waystones": (1, 1),
+    "Divination Cards": (1, 1),
+    "Quest Items": (1, 1),
+    "Belts": (2, 1),
+    "Flasks": (1, 2),
+    "Life Flasks": (1, 2),
+    "Mana Flasks": (1, 2),
+    "Helmets": (2, 2),
+    "Gloves": (2, 2),
+    "Boots": (2, 2),
+    "Shields": (2, 2),
+    "Bucklers": (2, 2),
+    "Foci": (2, 2),
+    "Quivers": (2, 3),
+    "Daggers": (1, 3),
+    "Wands": (1, 3),
+    "Sceptres": (1, 3),
+    "Claws": (1, 3),
+    "One Hand Maces": (1, 3),
+    "One Hand Swords": (1, 3),
+    "One Hand Axes": (1, 3),
+    "Body Armours": (2, 3),
+    "Crossbows": (2, 3),
+    "Bows": (2, 4),
+    "Staves": (2, 4),
+    "Two Hand Swords": (2, 4),
+    "Two Hand Maces": (2, 4),
+    "Two Hand Axes": (2, 4),
+    "Spears": (2, 4),
+    "Flails": (2, 3),
+    "Quarterstaves": (2, 4),
+}
 
 
 def get_poe_window_id():
@@ -180,6 +222,18 @@ def is_poe_item(text):
     if not text or text == CLIPBOARD_SENTINEL:
         return False
     return "Item Class:" in text and "Rarity:" in text
+
+
+def extract_item_class(text):
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if stripped.startswith("Item Class:"):
+            return stripped.replace("Item Class:", "").strip()
+    return ""
+
+
+def get_item_size(item_class):
+    return ITEM_SIZE.get(item_class, (1, 1))
 
 
 def extract_item_summary(text):
@@ -345,10 +399,11 @@ def scan_stash(top_left, bottom_right, grid_size, window_id, hover_delay=HOVER_D
     print(f"  Press F10 to stop")
     print(f"{'=' * 50}\n")
 
-    seen_hashes = set()
     items_found = []
+    occupied = set()
     empty_cells = 0
-    duplicate_cells = 0
+    skipped_cells = 0
+    scanned_cells = 0
 
     clear_clipboard()
 
@@ -363,15 +418,21 @@ def scan_stash(top_left, bottom_right, grid_size, window_id, hover_delay=HOVER_D
             print(f"\n\n  [STOPPED by F10]")
             break
 
+        if (row, col) in occupied:
+            skipped_cells += 1
+            continue
+
         pct = (i + 1) / total_cells * 100
         sys.stdout.write(
             f"\r  [{i + 1}/{total_cells}] ({pct:3.0f}%) "
             f"row {row:2d} col {col:2d} | "
             f"found: {len(items_found)} | "
             f"empty: {empty_cells} | "
-            f"dupes: {duplicate_cells}"
+            f"skip: {skipped_cells}"
         )
         sys.stdout.flush()
+
+        scanned_cells += 1
 
         t0 = time.perf_counter()
         move_and_copy(cx, cy, window_id, hover_delay)
@@ -384,7 +445,7 @@ def scan_stash(top_left, bottom_right, grid_size, window_id, hover_delay=HOVER_D
         t_move_total += t1 - t0
         t_clip_total += t2 - t1 - COPY_DELAY
 
-        if debug and i < 10:
+        if debug and scanned_cells <= 10:
             sys.stdout.write(
                 f"\n  [DBG] move+copy={1000 * (t1 - t0):.0f}ms "
                 f"clip={1000 * (t2 - t1 - COPY_DELAY):.0f}ms "
@@ -395,22 +456,24 @@ def scan_stash(top_left, bottom_right, grid_size, window_id, hover_delay=HOVER_D
             empty_cells += 1
             continue
 
-        item_hash = hashlib.md5(text.encode()).hexdigest()[:16]
-        if item_hash in seen_hashes:
-            duplicate_cells += 1
-            continue
+        item_class = extract_item_class(text)
+        w, h = get_item_size(item_class)
+        for r in range(row, row + h):
+            for c in range(col, col + w):
+                occupied.add((r, c))
 
-        seen_hashes.add(item_hash)
         summary = extract_item_summary(text)
         items_found.append(
             {
                 "text": text,
                 "summary": summary,
                 "cell": [row, col],
+                "size": [w, h],
+                "item_class": item_class,
             }
         )
 
-        sys.stdout.write(f"\n  >>> #{len(items_found)}: {summary}\n")
+        sys.stdout.write(f"\n  >>> #{len(items_found)}: {summary} [{w}x{h}]\n")
         sys.stdout.flush()
 
     kb_listener.stop()
@@ -421,17 +484,14 @@ def scan_stash(top_left, bottom_right, grid_size, window_id, hover_delay=HOVER_D
     print(f"  SCAN COMPLETE ({elapsed:.1f}s)")
     print(f"{'=' * 50}")
     print(f"  Items found:    {len(items_found)}")
+    print(f"  Cells scanned:  {scanned_cells}")
+    print(f"  Cells skipped:  {skipped_cells} (occupied by known items)")
     print(f"  Empty cells:    {empty_cells}")
-    print(f"  Duplicate cells: {duplicate_cells} (multi-slot items)")
-    print(f"  Total scanned:  {total_cells}")
-    scanned = i + 1 if "i" in dir() else 0
-    if scanned > 0:
-        print(f"  Avg per cell:   {1000 * elapsed / scanned:.0f}ms")
-        print(
-            f"  Time breakdown: move+copy={1000 * t_move_total / scanned:.0f}ms "
-            f"clip={1000 * t_clip_total / scanned:.0f}ms "
-            f"delay={1000 * COPY_DELAY:.0f}ms"
-        )
+    print(f"  Total cells:    {total_cells}")
+    if scanned_cells > 0:
+        print(f"  Avg per cell:   {1000 * elapsed / scanned_cells:.0f}ms")
+        saved_pct = 100 * skipped_cells / total_cells if total_cells > 0 else 0
+        print(f"  Cells saved:    {saved_pct:.0f}% (skipped via size detection)")
     print(f"{'=' * 50}")
 
     if items_found:
