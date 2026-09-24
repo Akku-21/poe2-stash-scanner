@@ -44,7 +44,7 @@ SETTINGS_FILE = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "scanner_settings.json"
 )
 
-VERSION = "0.6.1"
+VERSION = "0.7.0"
 
 NORMAL_GRID = (12, 12)
 QUAD_GRID = (24, 24)
@@ -105,6 +105,56 @@ DEFAULT_BRAIN_SOCKET = os.environ.get(
     "BRAIN_SOCKET",
     os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "poe2-brain.sock"),
 )
+DEFAULT_BRAIN_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "waystone",
+    "brain",
+)
+
+
+def ensure_brain_running(brain_dir, sock_path=DEFAULT_BRAIN_SOCKET, timeout=30):
+    if os.path.exists(sock_path):
+        result = brain_send({"id": "0", "cmd": "ping"}, sock_path=sock_path, timeout=3)
+        if result.get("ok"):
+            return True
+        try:
+            os.unlink(sock_path)
+        except OSError:
+            pass
+
+    if not brain_dir or not os.path.exists(os.path.join(brain_dir, "package.json")):
+        print(f"  [brain] Directory not found: {brain_dir}")
+        print(
+            f"  Run: venv/bin/python stash_scanner.py --set-brain-dir /path/to/waystone/brain"
+        )
+        return False
+
+    print(f"  [brain] Starting...")
+    env = os.environ.copy()
+    env["BRAIN_SOCKET"] = sock_path
+
+    subprocess.Popen(
+        ["npx", "tsx", "src/server.ts"],
+        cwd=brain_dir,
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if os.path.exists(sock_path):
+            time.sleep(0.3)
+            result = brain_send(
+                {"id": "0", "cmd": "ping"}, sock_path=sock_path, timeout=3
+            )
+            if result.get("ok"):
+                print(f"  [brain] Ready")
+                return True
+        time.sleep(0.5)
+
+    print(f"  [brain] Timed out after {timeout}s — check waystone/brain installation")
+    return False
 
 
 def price_check_item(
@@ -781,6 +831,23 @@ def main():
         metavar="POESESSID",
         help="Save POESESSID to settings for authenticated trade API calls",
     )
+    parser.add_argument(
+        "--set-league",
+        type=str,
+        metavar="LEAGUE",
+        help="Save default league to settings (e.g. 'Standard', 'Settlers')",
+    )
+    parser.add_argument(
+        "--set-brain-dir",
+        type=str,
+        metavar="PATH",
+        help="Save path to Waystone brain directory to settings",
+    )
+    parser.add_argument(
+        "--list-leagues",
+        action="store_true",
+        help="List available PoE2 leagues from the brain and exit",
+    )
     args = parser.parse_args()
 
     check_dependencies()
@@ -795,6 +862,37 @@ def main():
         settings["poesessid"] = args.set_sessid
         save_settings(settings)
         print("  [settings] POESESSID saved.")
+        sys.exit(0)
+
+    if args.set_league:
+        settings["league"] = args.set_league
+        save_settings(settings)
+        print(f"  [settings] League set to: {args.set_league}")
+        sys.exit(0)
+
+    if args.set_brain_dir:
+        settings["brain_dir"] = args.set_brain_dir
+        save_settings(settings)
+        print(f"  [settings] Brain dir set to: {args.set_brain_dir}")
+        sys.exit(0)
+
+    brain_dir = settings.get("brain_dir", DEFAULT_BRAIN_DIR)
+    league = (
+        args.league if args.league != "Standard" else settings.get("league", "Standard")
+    )
+
+    if args.list_leagues:
+        if not ensure_brain_running(brain_dir, sock_path=args.brain):
+            sys.exit(1)
+        result = brain_send({"id": "l", "cmd": "leagues"}, sock_path=args.brain)
+        if result.get("ok"):
+            leagues = result.get("result", [])
+            print("\n  Available leagues:")
+            for lg in leagues:
+                marker = " *" if lg.get("id") == league else ""
+                print(f"    {lg.get('id', lg)}{marker}")
+        else:
+            print(f"  [error] {result.get('error')}")
         sys.exit(0)
 
     grid_size = QUAD_GRID if args.quad else NORMAL_GRID
@@ -821,13 +919,21 @@ def main():
         sys.exit(1)
 
     if args.price_first:
-        sessid = settings.get("poesessid", "")
-        if sessid:
-            print(f"  Logging into brain...")
-            brain_login(sessid, sock_path=args.brain)
+        if not ensure_brain_running(brain_dir, sock_path=args.brain):
+            print("  [ERROR] Brain could not be started. Pricing disabled.")
+            args.price_first = False
         else:
-            print("  [warn] No POESESSID set — trade API calls will be anonymous.")
-            print("  Run: venv/bin/python stash_scanner.py --set-sessid YOUR_POESESSID")
+            sessid = settings.get("poesessid", "")
+            if sessid:
+                print(f"  Logging into brain...")
+                brain_login(sessid, sock_path=args.brain)
+            else:
+                print(
+                    "  [warn] No POESESSID — anonymous requests (may be rate-limited)."
+                )
+                print(
+                    "  Run: venv/bin/python stash_scanner.py --set-sessid YOUR_POESESSID"
+                )
 
     print(f"\n  Starting scan in {args.countdown} seconds...")
     for i in range(args.countdown, 0, -1):
@@ -853,7 +959,7 @@ def main():
             grid_size,
             wid,
             hover_delay=args.delay,
-            league=args.league,
+            league=league,
             brain_socket=args.brain,
             price_check_first=args.price_first,
         )
