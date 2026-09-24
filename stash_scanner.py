@@ -28,6 +28,10 @@ import hashlib
 import argparse
 import shutil
 
+import cv2
+import numpy as np
+import mss
+
 # --- Dependencies ---
 
 XDOTOOL = shutil.which("xdotool")
@@ -39,7 +43,7 @@ SETTINGS_FILE = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "scanner_settings.json"
 )
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 
 NORMAL_GRID = (12, 12)
 QUAD_GRID = (24, 24)
@@ -91,6 +95,62 @@ ITEM_SIZE = {
     "Flails": (2, 3),
     "Quarterstaves": (2, 4),
 }
+
+TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
+STASH_TEMPLATE = os.path.join(TEMPLATE_DIR, "stash_header.png")
+STASH_MATCH_THRESHOLD = 0.8
+
+
+def capture_screen_region(region=None):
+    with mss.mss() as sct:
+        if region:
+            monitor = {
+                "left": region[0],
+                "top": region[1],
+                "width": region[2],
+                "height": region[3],
+            }
+        else:
+            monitor = sct.monitors[0]
+        screenshot = sct.grab(monitor)
+        return np.array(screenshot)[:, :, :3]
+
+
+def is_stash_open(search_region=None):
+    if not os.path.exists(STASH_TEMPLATE):
+        return True
+    template = cv2.imread(STASH_TEMPLATE)
+    if template is None:
+        return True
+    screenshot = capture_screen_region(search_region)
+    result = cv2.matchTemplate(screenshot, template, cv2.TM_CCOEFF_NORMED)
+    _, max_val, _, _ = cv2.minMaxLoc(result)
+    return max_val >= STASH_MATCH_THRESHOLD
+
+
+def save_stash_template():
+    print("\n" + "=" * 50)
+    print("  SAVE STASH TEMPLATE")
+    print("=" * 50)
+    print("\nOpen your stash in PoE2, then click the")
+    print("TOP-LEFT corner of the 'STASH' header text")
+    top_left = wait_for_click()
+    print(f"  Top-left: {top_left}")
+
+    print("\nClick the BOTTOM-RIGHT corner of the 'STASH' header text")
+    bottom_right = wait_for_click()
+    print(f"  Bottom-right: {bottom_right}")
+
+    w = bottom_right[0] - top_left[0]
+    h = bottom_right[1] - top_left[1]
+    if w <= 0 or h <= 0:
+        print("  [ERROR] Invalid region!")
+        return
+
+    img = capture_screen_region((top_left[0], top_left[1], w, h))
+    os.makedirs(TEMPLATE_DIR, exist_ok=True)
+    cv2.imwrite(STASH_TEMPLATE, img)
+    print(f"\n  Template saved: {STASH_TEMPLATE} ({w}x{h})")
 
 
 def get_poe_window_id():
@@ -556,9 +616,18 @@ def main():
         default=3,
         help="Seconds to wait before scanning starts (default: 3)",
     )
+    parser.add_argument(
+        "--save-template",
+        action="store_true",
+        help="Capture and save the stash header template for detection",
+    )
     args = parser.parse_args()
 
     check_dependencies()
+
+    if args.save_template:
+        save_stash_template()
+        sys.exit(0)
 
     grid_size = QUAD_GRID if args.quad else NORMAL_GRID
     grid_label = "Quad/XXL (24x24)" if args.quad else "Normal (12x12)"
@@ -594,6 +663,13 @@ def main():
 
     focus_poe_window()
     time.sleep(0.3)
+
+    if not is_stash_open():
+        print("\n  [ERROR] Stash does not appear to be open!")
+        print("  Open your stash in PoE2 and try again.")
+        print("  (If no template saved yet, run: --save-template)")
+        sys.exit(1)
+
     print(f"\r  GO!   ")
 
     try:
