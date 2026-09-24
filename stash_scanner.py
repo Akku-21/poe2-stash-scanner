@@ -43,7 +43,7 @@ SETTINGS_FILE = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "scanner_settings.json"
 )
 
-VERSION = "0.5.0"
+VERSION = "0.5.1"
 
 NORMAL_GRID = (12, 12)
 QUAD_GRID = (24, 24)
@@ -77,23 +77,23 @@ ITEM_SIZE = {
     "Bucklers": (2, 2),
     "Foci": (2, 2),
     "Quivers": (2, 3),
-    "Daggers": (1, 3),
-    "Wands": (1, 3),
-    "Sceptres": (1, 3),
-    "Claws": (1, 3),
-    "One Hand Maces": (1, 3),
-    "One Hand Swords": (1, 3),
-    "One Hand Axes": (1, 3),
+    "Daggers": (2, 3),
+    "Wands": (2, 3),
+    "Sceptres": (2, 3),
+    "Claws": (2, 3),
+    "One Hand Maces": (2, 3),
+    "One Hand Swords": (2, 3),
+    "One Hand Axes": (2, 3),
     "Body Armours": (2, 3),
-    "Crossbows": (2, 3),
+    "Crossbows": (2, 4),
     "Bows": (2, 4),
-    "Staves": (2, 4),
+    "Staves": (1, 4),
     "Two Hand Swords": (2, 4),
     "Two Hand Maces": (2, 4),
     "Two Hand Axes": (2, 4),
     "Spears": (2, 4),
     "Flails": (2, 3),
-    "Quarterstaves": (2, 4),
+    "Quarterstaves": (1, 4),
 }
 
 TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
