@@ -27,6 +27,7 @@ import sys
 import hashlib
 import argparse
 import shutil
+import socket as _socket
 
 import cv2
 import numpy as np
@@ -43,7 +44,7 @@ SETTINGS_FILE = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "scanner_settings.json"
 )
 
-VERSION = "0.5.1"
+VERSION = "0.6.0"
 
 NORMAL_GRID = (12, 12)
 QUAD_GRID = (24, 24)
@@ -99,6 +100,75 @@ ITEM_SIZE = {
 TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
 STASH_TEMPLATE = os.path.join(TEMPLATE_DIR, "stash_header.png")
 STASH_MATCH_THRESHOLD = 0.8
+
+DEFAULT_BRAIN_SOCKET = os.environ.get(
+    "BRAIN_SOCKET",
+    os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "poe2-brain.sock"),
+)
+
+
+def price_check_item(
+    clipboard_text, league="Standard", sock_path=DEFAULT_BRAIN_SOCKET, timeout=60
+):
+    if not os.path.exists(sock_path):
+        return {
+            "ok": False,
+            "error": f"Brain socket not found: {sock_path}\n  Run: ./start_brain.sh",
+        }
+    try:
+        s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        s.connect(sock_path)
+        req = json.dumps(
+            {"id": "1", "cmd": "price", "clipboard": clipboard_text, "league": league}
+        )
+        s.sendall((req + "\n").encode())
+        buf = ""
+        while True:
+            chunk = s.recv(8192).decode("utf-8", errors="replace")
+            if not chunk:
+                break
+            buf += chunk
+            lines = buf.split("\n")
+            buf = lines[-1]
+            for line in lines[:-1]:
+                line = line.strip()
+                if not line:
+                    continue
+                resp = json.loads(line)
+                if "progress" in resp:
+                    print(f"  [brain] {resp['progress']}")
+                elif "ok" in resp:
+                    s.close()
+                    return resp
+        s.close()
+        return {"ok": False, "error": "Brain disconnected without response"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def format_price_result(result):
+    if not result.get("ok"):
+        print(f"\n  [price check failed] {result.get('error', 'unknown error')}")
+        return
+    data = result.get("result", {})
+    total = data.get("total", 0)
+    listings = data.get("listings", [])
+    print(f"\n  {'=' * 48}")
+    print(f"  PRICE CHECK RESULTS")
+    print(f"  {'=' * 48}")
+    print(f"  Total listings: {total}")
+    if not listings:
+        print("  No listings found.")
+    else:
+        print(f"  Lowest prices:")
+        for i, listing in enumerate(listings[:5], 1):
+            price = listing.get("price")
+            currency = listing.get("priceCurrency", "?")
+            account = listing.get("accountName", "?")
+            age = listing.get("listedAt", "")
+            print(f"    {i}. {price} {currency}  — {account}  {age}")
+    print(f"  {'=' * 48}\n")
 
 
 def capture_screen_region(region=None):
@@ -432,7 +502,16 @@ def calculate_cell_centers(top_left, bottom_right, grid_size):
 # --- Scanner ---
 
 
-def scan_stash(top_left, bottom_right, grid_size, window_id, hover_delay=HOVER_DELAY):
+def scan_stash(
+    top_left,
+    bottom_right,
+    grid_size,
+    window_id,
+    hover_delay=HOVER_DELAY,
+    league="Standard",
+    brain_socket=DEFAULT_BRAIN_SOCKET,
+    price_check_first=False,
+):
     """Scan stash tab cell by cell. Returns list of unique items found."""
     from pynput import keyboard as pynput_kb
 
@@ -545,6 +624,12 @@ def scan_stash(top_left, bottom_right, grid_size, window_id, hover_delay=HOVER_D
         sys.stdout.write(f"\n  >>> #{len(items_found)}: {summary} [{w}x{h}]\n")
         sys.stdout.flush()
 
+        if price_check_first and len(items_found) == 1:
+            print(f"\n  Pricing via brain (league: {league})...")
+            result = price_check_item(text, league=league, sock_path=brain_socket)
+            format_price_result(result)
+            abort_flag[0] = True
+
     kb_listener.stop()
     elapsed = time.time() - scan_start
 
@@ -631,6 +716,23 @@ def main():
         action="store_true",
         help="Capture and save the stash header template for detection",
     )
+    parser.add_argument(
+        "--league",
+        type=str,
+        default="Standard",
+        help="PoE2 league for price checking (default: Standard)",
+    )
+    parser.add_argument(
+        "--brain",
+        type=str,
+        default=DEFAULT_BRAIN_SOCKET,
+        help=f"Path to Waystone brain Unix socket (default: {DEFAULT_BRAIN_SOCKET})",
+    )
+    parser.add_argument(
+        "--price-first",
+        action="store_true",
+        help="Price check the first item found, then stop scanning",
+    )
     args = parser.parse_args()
 
     check_dependencies()
@@ -689,6 +791,9 @@ def main():
             grid_size,
             wid,
             hover_delay=args.delay,
+            league=args.league,
+            brain_socket=args.brain,
+            price_check_first=args.price_first,
         )
     except KeyboardInterrupt:
         print("\n\n  [ABORTED by user]")
